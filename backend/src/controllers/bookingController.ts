@@ -364,41 +364,8 @@ export const createBooking = async (req: Request, res: Response): Promise<void> 
         return;
     }
 
-    // Queue Confirmation Email
-    const user = await prisma.user.findUnique({ where: { id: userId } });
-    
-    if (user && user.notificationConsent) {
-        if (user.email) {
-            const { subject, html } = await emailService.getBookingConfirmationContent(
-                user.fullName, 
-                serviceDisplayName,
-                date, 
-                time, 
-                !!guestDetails
-            );
-            await notificationQueue.add(
-                'EMAIL', 
-                'BN', 
-                user.email, 
-                html, 
-                subject, 
-                { bookingId: result.id, userId: user.id }
-            );
-        }
-
-        // Queue Confirmation SMS
-        if (user.phone) {
-            const smsBody = await smsService.getBookingConfirmationContent(user.fullName, date, time);
-            await notificationQueue.add(
-                'SMS', 
-                'BN', 
-                user.phone, 
-                smsBody, 
-                undefined, 
-                { bookingId: result.id, userId: user.id }
-            );
-        }
-    }
+    // Notifications are now handled in addBookingPayment (after successful payment)
+    // to prevent sending emails for failed/abandoned payments.
 
     res.status(201).json(result);
   } catch (error) {
@@ -412,10 +379,44 @@ export const updateBooking = async (req: Request, res: Response): Promise<void> 
         const id = req.params.id as string;
         const { status, stylistId, paymentStatus, date, time } = req.body;
 
-        const booking = await prisma.booking.findUnique({ where: { id } });
+        const booking = await prisma.booking.findUnique({ 
+            where: { id },
+            include: { customer: true }
+        });
         if (!booking) {
             res.status(404).json({ message: 'Booking not found' });
             return;
+        }
+
+        const userId = (req as any).user?.id;
+        const userRole = (req as any).user?.role;
+        const requestEmail = req.body.email;
+
+        // Security Check
+        if (userId) {
+             // Logged-in User
+             if (userRole !== 'admin' && userRole !== 'stylist') {
+                 if (booking.customerId !== userId) {
+                     res.status(403).json({ message: 'Not authorized to update this booking' });
+                     return;
+                 }
+                 // Customers can ONLY cancel
+                 if (status !== 'cancelled') {
+                      res.status(403).json({ message: 'Customers can only cancel bookings.' });
+                      return;
+                 }
+             }
+        } else {
+             // Guest User (No Token)
+             // Must verify email matches booking customer email
+             if (!requestEmail || !booking.customer || booking.customer.email !== requestEmail) {
+                  res.status(403).json({ message: 'Email verification failed for guest cancellation.' });
+                  return;
+             }
+             if (status !== 'cancelled') {
+                  res.status(403).json({ message: 'Guests can only cancel bookings.' });
+                  return;
+             }
         }
 
         const data: any = {};
@@ -765,6 +766,53 @@ export const addBookingPayment = async (req: Request, res: Response): Promise<vo
 
         if (booking && (booking as any).customer && (booking as any).customer.notificationConsent) {
             const customer = (booking as any).customer;
+            
+            // --- Send Booking Confirmation (Moved from createBooking) ---
+            // Only send if this is the first payment (initial deposit)
+            if (booking.payments && booking.payments.length === 1) {
+                const serviceName = booking.category?.name || booking.style?.name || 'Service';
+                const bookingDateStr = booking.bookingDate.toISOString().split('T')[0];
+                
+                // Format time HH:mm from UTC Date object
+                const timeObj = new Date(booking.bookingTime);
+                const hours = timeObj.getUTCHours().toString().padStart(2, '0');
+                const minutes = timeObj.getUTCMinutes().toString().padStart(2, '0');
+                const bookingTimeStr = `${hours}:${minutes}`;
+
+                // Email Confirmation
+                if (customer.email) {
+                    const { subject, html } = await emailService.getBookingConfirmationContent(
+                        customer.fullName, 
+                        serviceName,
+                        bookingDateStr, 
+                        bookingTimeStr, 
+                        false // Treat as registered user since they have a record
+                    );
+                    await notificationQueue.add(
+                        'EMAIL', 
+                        'BN', 
+                        customer.email, 
+                        html, 
+                        subject, 
+                        { bookingId: id, userId: customer.id }
+                    );
+                }
+
+                // SMS Confirmation
+                 if (customer.phone) {
+                    const smsBody = await smsService.getBookingConfirmationContent(customer.fullName, bookingDateStr, bookingTimeStr);
+                    await notificationQueue.add(
+                        'SMS', 
+                        'BN', 
+                        customer.phone, 
+                        smsBody, 
+                        undefined, 
+                        { bookingId: id, userId: customer.id }
+                    );
+                }
+            }
+            // -----------------------------------------------------------
+
             const dateStr = new Date().toLocaleDateString();
 
             // Send Email Receipt

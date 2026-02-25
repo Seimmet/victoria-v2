@@ -19,7 +19,7 @@ router.get('/', protect, getBookings);
 router.post('/:id/check-in', protect, checkInBooking);
 
 // Admin/Stylist: Update booking (Assign stylist, change status)
-router.patch('/:id', protect, authorize('admin', 'stylist'), updateBooking);
+router.patch('/:id', authenticateToken, updateBooking);
 
 // Admin/Stylist: Create Payment Intent for existing booking (Service Payment)
 router.post('/:id/payment-intent', authenticateToken, createBookingPaymentIntent);

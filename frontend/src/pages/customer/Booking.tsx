@@ -484,6 +484,37 @@ export default function Booking() {
     }
   }, [step, clientSecret, initializePayment]);
 
+  const handlePaymentFailure = async (errorMessage: string) => {
+    if (!bookingId) return;
+
+    try {
+        setLoading(true);
+        // Cancel the booking on payment failure as requested
+        const user = authService.getCurrentUser();
+        const email = user ? undefined : guestDetails.email;
+        
+        await bookingService.cancelBooking(bookingId, email);
+        
+        // Clear current booking state so user can start over or retry
+        setBookingId(null);
+        setClientSecret(null);
+        setStoredPaymentIntentId(null);
+        
+        // Go back to details step
+        setStep(5);
+        
+        toast({
+            title: "Booking Cancelled",
+            description: "Payment failed. Please review your details and try again.",
+            variant: "destructive"
+        });
+    } catch (error) {
+        console.error("Failed to cancel booking:", error);
+    } finally {
+        setLoading(false);
+    }
+  };
+
   const formatTimeDisplay = (time: string | null) => {
     if (!time) return '';
     try {
@@ -1176,7 +1207,7 @@ export default function Booking() {
 
                   {clientSecret && (
                       <Elements stripe={stripePromise} options={{ clientSecret }}>
-                          <CheckoutForm onSuccess={handlePaymentSuccess} amount={TOTAL_DEPOSIT_CENTS} />
+                          <CheckoutForm onSuccess={handlePaymentSuccess} onFailure={handlePaymentFailure} amount={TOTAL_DEPOSIT_CENTS} />
                       </Elements>
                   )}
                   {!clientSecret && (

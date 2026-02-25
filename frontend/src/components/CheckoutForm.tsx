@@ -6,10 +6,11 @@ import { useToast } from '@/hooks/use-toast';
 
 interface CheckoutFormProps {
   onSuccess: (paymentIntentId: string) => void;
+  onFailure?: (error: string) => void;
   amount: number;
 }
 
-export default function CheckoutForm({ onSuccess, amount }: CheckoutFormProps) {
+export default function CheckoutForm({ onSuccess, onFailure, amount }: CheckoutFormProps) {
   const stripe = useStripe();
   const elements = useElements();
   const { toast } = useToast();
@@ -43,6 +44,9 @@ export default function CheckoutForm({ onSuccess, amount }: CheckoutFormProps) {
         description: error.message || 'Could not process payment',
         variant: 'destructive',
       });
+      if (onFailure) {
+          onFailure(error.message || 'Payment failed');
+      }
       setLoading(false);
     } else if (paymentIntent && paymentIntent.status === 'succeeded') {
       toast({

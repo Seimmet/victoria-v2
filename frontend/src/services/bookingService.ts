@@ -162,6 +162,29 @@ export const bookingService = {
   },
 
 
+  async cancelBooking(id: string, email?: string): Promise<Booking> {
+      const token = authService.getToken();
+      const headers: any = {
+          'Content-Type': 'application/json'
+      };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      
+      const body: any = { status: 'cancelled' };
+      if (email) body.email = email;
+
+      const response = await fetch(`${API_URL}/bookings/${id}`, {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify(body)
+      });
+      
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || 'Failed to cancel booking');
+      }
+      return response.json();
+  },
+
   async updateBooking(id: string, data: { status?: string; stylistId?: string; paymentStatus?: string; date?: string; time?: string }): Promise<Booking> {
       const token = authService.getToken();
       const response = await fetch(`${API_URL}/bookings/${id}`, {
