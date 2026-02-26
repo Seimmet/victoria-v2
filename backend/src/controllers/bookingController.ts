@@ -664,7 +664,7 @@ export const createPaymentIntent = async (req: Request, res: Response): Promise<
         customer_email: guestDetails?.email
       },
        automatic_payment_methods: { enabled: false },
-       payment_method_types: ["card", "us_bank_account"]
+       payment_method_types: ["card"]
     });
 
     res.send({
@@ -705,7 +705,7 @@ export const createBookingPaymentIntent = async (req: Request, res: Response): P
             currency: 'usd',
             metadata: { bookingId: id },
             automatic_payment_methods: { enabled: false },
-            payment_method_types: ["card", "us_bank_account"]
+            payment_method_types: ["card"]
         });
 
         res.json({
