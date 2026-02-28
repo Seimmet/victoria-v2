@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Bar, BarChart, ResponsiveContainer, XAxis, YAxis, Tooltip } from "recharts";
+import { Bar, BarChart, XAxis, YAxis } from "recharts";
 import { Calendar, DollarSign, Users, Scissors, TrendingUp, Clock } from "lucide-react";
 import { authService, User } from "@/services/authService";
 import { getDashboardStats, getRevenueStats } from "@/services/reportsService";
@@ -8,6 +8,14 @@ import { useSettings } from "@/contexts/SettingsContext";
 import styleBohoLocs from '@/assets/style-boho-locs.jpg';
 import styleBoxBraids from '@/assets/style-box-braids.jpg';
 import styleCornrows from '@/assets/style-cornrows.jpg';
+import { ChartContainer, ChartTooltip, ChartTooltipContent, ChartConfig } from "@/components/ui/chart";
+
+const chartConfig = {
+  total: {
+    label: "Total",
+    color: "hsl(var(--primary))",
+  },
+} satisfies ChartConfig;
 
 const Overview = () => {
   const { settings } = useSettings();
@@ -119,17 +127,14 @@ const Overview = () => {
                   <CardTitle>Weekly Revenue</CardTitle>
                 </CardHeader>
                 <CardContent className="pl-2">
-                  <ResponsiveContainer width="100%" height={350}>
+                  <ChartContainer config={chartConfig} className="h-[350px] w-full">
                     <BarChart data={adminData}>
                       <XAxis dataKey="name" stroke="#888888" fontSize={12} tickLine={false} axisLine={false} />
                       <YAxis stroke="#888888" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `$${value}`} />
-                      <Tooltip 
-                        cursor={{ fill: 'transparent' }}
-                        contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
-                      />
+                      <ChartTooltip content={<ChartTooltipContent />} />
                       <Bar dataKey="total" fill="currentColor" radius={[4, 4, 0, 0]} className="fill-gold" />
                     </BarChart>
-                  </ResponsiveContainer>
+                  </ChartContainer>
                 </CardContent>
               </Card>
               <Card className="col-span-3">
@@ -209,17 +214,14 @@ const Overview = () => {
                   <CardTitle>Weekly Appointments</CardTitle>
                 </CardHeader>
                 <CardContent className="pl-2">
-                  <ResponsiveContainer width="100%" height={350}>
+                  <ChartContainer config={chartConfig} className="h-[350px] w-full">
                     <BarChart data={stylistData}>
                       <XAxis dataKey="name" stroke="#888888" fontSize={12} tickLine={false} axisLine={false} />
                       <YAxis stroke="#888888" fontSize={12} tickLine={false} axisLine={false} />
-                      <Tooltip 
-                        cursor={{ fill: 'transparent' }}
-                        contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
-                      />
+                      <ChartTooltip content={<ChartTooltipContent />} />
                       <Bar dataKey="total" fill="currentColor" radius={[4, 4, 0, 0]} className="fill-gold" />
                     </BarChart>
-                  </ResponsiveContainer>
+                  </ChartContainer>
                 </CardContent>
               </Card>
             </div>

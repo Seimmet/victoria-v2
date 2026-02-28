@@ -45,7 +45,11 @@ export default function CheckoutForm({ onSuccess, onFailure, amount }: CheckoutF
         variant: 'destructive',
       });
       if (onFailure) {
-          onFailure(error.message || 'Payment failed');
+          try {
+            await onFailure(error.message || 'Payment failed');
+          } catch (e) {
+            console.error("onFailure callback failed", e);
+          }
       }
       setLoading(false);
     } else if (paymentIntent && paymentIntent.status === 'succeeded') {

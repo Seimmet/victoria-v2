@@ -1,13 +1,29 @@
 import React, { useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { 
-    BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, 
+    BarChart, Bar, XAxis, YAxis, CartesianGrid, 
     PieChart, Pie, Cell 
 } from 'recharts';
 import { getDashboardStats, getRevenueStats, getCategoryStats, getStylistStats } from '../../services/reportsService';
 import { Loader2, DollarSign, Calendar, CheckCircle, Users } from 'lucide-react';
+import { ChartContainer, ChartTooltip, ChartTooltipContent, ChartConfig } from "@/components/ui/chart";
 
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8'];
+
+const chartConfig = {
+  revenue: {
+    label: "Revenue",
+    color: "#8884d8",
+  },
+  bookings: {
+    label: "Bookings",
+    color: "#82ca9d",
+  },
+  completedBookings: {
+    label: "Completed Bookings",
+    color: "#82ca9d",
+  },
+} satisfies ChartConfig;
 
 const AdminReports = () => {
     const [loading, setLoading] = useState(true);
@@ -104,15 +120,15 @@ const AdminReports = () => {
                         <CardTitle>Revenue Over Time (Last 30 Days)</CardTitle>
                     </CardHeader>
                     <CardContent className="pl-2">
-                        <ResponsiveContainer width="100%" height={350}>
+                        <ChartContainer config={chartConfig} className="h-[350px] w-full">
                             <BarChart data={revenueData}>
                                 <CartesianGrid strokeDasharray="3 3" />
                                 <XAxis dataKey="date" />
                                 <YAxis />
-                                <Tooltip />
-                                <Bar dataKey="revenue" fill="#8884d8" name="Revenue ($)" />
+                                <ChartTooltip content={<ChartTooltipContent />} />
+                                <Bar dataKey="revenue" fill="var(--color-revenue)" name="Revenue ($)" />
                             </BarChart>
-                        </ResponsiveContainer>
+                        </ChartContainer>
                     </CardContent>
                 </Card>
 
@@ -122,7 +138,7 @@ const AdminReports = () => {
                         <CardTitle>Bookings by Category</CardTitle>
                     </CardHeader>
                     <CardContent>
-                        <ResponsiveContainer width="100%" height={350}>
+                        <ChartContainer config={chartConfig} className="mx-auto aspect-square max-h-[350px]">
                             <PieChart>
                                 <Pie
                                     data={categoryData}
@@ -133,14 +149,15 @@ const AdminReports = () => {
                                     outerRadius={80}
                                     fill="#8884d8"
                                     dataKey="bookings"
+                                    nameKey="name"
                                 >
                                     {categoryData.map((entry, index) => (
                                         <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                                     ))}
                                 </Pie>
-                                <Tooltip />
+                                <ChartTooltip content={<ChartTooltipContent hideLabel />} />
                             </PieChart>
-                        </ResponsiveContainer>
+                        </ChartContainer>
                     </CardContent>
                 </Card>
             </div>
@@ -151,15 +168,15 @@ const AdminReports = () => {
                     <CardTitle>Stylist Performance (Completed Bookings)</CardTitle>
                 </CardHeader>
                 <CardContent>
-                    <ResponsiveContainer width="100%" height={300}>
+                    <ChartContainer config={chartConfig} className="h-[300px] w-full">
                         <BarChart data={stylistData} layout="vertical" margin={{ left: 50 }}>
                             <CartesianGrid strokeDasharray="3 3" />
                             <XAxis type="number" />
-                            <YAxis dataKey="name" type="category" />
-                            <Tooltip />
-                            <Bar dataKey="completedBookings" fill="#82ca9d" name="Completed Bookings" />
+                            <YAxis dataKey="name" type="category" width={100} />
+                            <ChartTooltip content={<ChartTooltipContent />} />
+                            <Bar dataKey="completedBookings" fill="var(--color-completedBookings)" name="Completed Bookings" radius={[0, 4, 4, 0]} />
                         </BarChart>
-                    </ResponsiveContainer>
+                    </ChartContainer>
                 </CardContent>
             </Card>
         </div>

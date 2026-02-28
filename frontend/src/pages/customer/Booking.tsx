@@ -485,15 +485,21 @@ export default function Booking() {
   }, [step, clientSecret, initializePayment]);
 
   const handlePaymentFailure = async (errorMessage: string) => {
-    if (!bookingId) return;
-
+    console.error("Payment failed:", errorMessage);
+    if (!bookingId) {
+        console.warn("No bookingId to cancel");
+        return;
+    }
+    
     try {
         setLoading(true);
         // Cancel the booking on payment failure as requested
         const user = authService.getCurrentUser();
         const email = user ? undefined : guestDetails.email;
+        console.log(`Cancelling booking ${bookingId} for email ${email || 'user'}`);
         
         await bookingService.cancelBooking(bookingId, email);
+        console.log("Booking cancelled successfully");
         
         // Clear current booking state so user can start over or retry
         setBookingId(null);
@@ -509,7 +515,14 @@ export default function Booking() {
             variant: "destructive"
         });
     } catch (error) {
-        console.error("Failed to cancel booking:", error);
+        console.error("Failed to cancel booking after payment failure:", error);
+        // Even if cancellation fails, we should probably reset UI so user can retry
+        // But maybe we should warn them?
+        toast({
+            title: "Error",
+            description: "Payment failed and we couldn't cancel the pending booking. Please contact support.",
+            variant: "destructive"
+        });
     } finally {
         setLoading(false);
     }

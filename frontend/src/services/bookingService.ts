@@ -177,12 +177,24 @@ export const bookingService = {
           headers,
           body: JSON.stringify(body)
       });
-      
+
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || 'Failed to cancel booking');
+          let errorMsg = 'Failed to cancel booking';
+          try {
+            const error = await response.json();
+            errorMsg = error.message || errorMsg;
+          } catch (e) {
+             // Response was not JSON
+          }
+          throw new Error(errorMsg);
       }
-      return response.json();
+      
+      try {
+        return await response.json();
+      } catch (e) {
+         // If response is empty or not JSON, return minimal booking object or throw
+         return { id, status: 'cancelled' } as any;
+      }
   },
 
   async updateBooking(id: string, data: { status?: string; stylistId?: string; paymentStatus?: string; date?: string; time?: string }): Promise<Booking> {
