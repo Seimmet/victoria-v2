@@ -1,6 +1,10 @@
 import { Request, Response } from 'express';
 import prisma from '../utils/prisma';
 
+// Simple in-memory cache for availability to reduce DB load
+const cache = new Map<string, { data: any, expires: number }>();
+const CACHE_TTL = 30 * 1000; // 30 seconds
+
 const DEFAULT_BUSINESS_HOURS = {
   monday: { start: "09:00", end: "22:00", isOpen: true },
   tuesday: { start: "09:00", end: "22:00", isOpen: true },
@@ -14,6 +18,15 @@ const DEFAULT_BUSINESS_HOURS = {
 export const getAvailability = async (req: Request, res: Response): Promise<void> => {
   try {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+
+    // Check in-memory cache
+    const cacheKey = JSON.stringify(req.query);
+    const cached = cache.get(cacheKey);
+    if (cached && cached.expires > Date.now()) {
+        res.json(cached.data);
+        return;
+    }
+
     const { date, startDate, endDate, categoryId, styleId, stylistId, duration, excludeBookingId } = req.query;
     
     // Determine date range
@@ -86,7 +99,10 @@ export const getAvailability = async (req: Request, res: Response): Promise<void
     }
 
     if (activeStylists.length === 0) {
-        res.json(startDate && endDate ? {} : []); 
+        const emptyData = startDate && endDate ? {} : [];
+        cache.set(cacheKey, { data: emptyData, expires: Date.now() + CACHE_TTL });
+        if (cache.size > 1000) cache.clear();
+        res.json(emptyData); 
         return;
     }
 
@@ -305,11 +321,16 @@ export const getAvailability = async (req: Request, res: Response): Promise<void
     }
 
     // Return array if single date (legacy support), object if range
+    let finalData;
     if (startDate && endDate) {
-        res.json(result);
+        finalData = result;
     } else {
-        res.json(result[toDateString(start)] || []);
+        finalData = result[toDateString(start)] || [];
     }
+
+    cache.set(cacheKey, { data: finalData, expires: Date.now() + CACHE_TTL });
+    if (cache.size > 1000) cache.clear();
+    res.json(finalData);
 
   } catch (error) {
     console.error(error);
