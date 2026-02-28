@@ -1,10 +1,6 @@
 import { Request, Response } from 'express';
 import prisma from '../utils/prisma';
 
-// Simple in-memory cache for availability to reduce DB load
-const cache = new Map<string, { data: any, expires: number }>();
-const CACHE_TTL = 30 * 1000; // 30 seconds
-
 const DEFAULT_BUSINESS_HOURS = {
   monday: { start: "09:00", end: "22:00", isOpen: true },
   tuesday: { start: "09:00", end: "22:00", isOpen: true },
@@ -18,15 +14,6 @@ const DEFAULT_BUSINESS_HOURS = {
 export const getAvailability = async (req: Request, res: Response): Promise<void> => {
   try {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-
-    // Check in-memory cache
-    const cacheKey = JSON.stringify(req.query);
-    const cached = cache.get(cacheKey);
-    if (cached && cached.expires > Date.now()) {
-        res.json(cached.data);
-        return;
-    }
-
     const { date, startDate, endDate, categoryId, styleId, stylistId, duration, excludeBookingId } = req.query;
     
     // Determine date range
@@ -52,85 +39,94 @@ export const getAvailability = async (req: Request, res: Response): Promise<void
 
     const requestedDuration = duration ? parseInt(duration as string) : 60;
 
-    console.time('availability-db-fetch');
+    // 1. Get Active Stylists
+    let activeStylists: { id: string, workingHours: any, user: { fullName: string }, leaves: { startDate: Date, endDate: Date }[] }[] = [];
+    if (stylistId) {
+        const where: any = { id: stylistId as string, isActive: true };
+        if (styleId) {
+            where.styles = { some: { id: styleId as string } };
+        }
 
-    // 1. Prepare Active Stylists Query
-    const fetchStylists = async () => {
-        const select = { 
-            id: true, 
-            workingHours: true, 
-            user: { select: { fullName: true } },
-            leaves: {
-                where: {
-                        startDate: { lte: end },
-                        endDate: { gte: start }
+        const stylist = await prisma.stylist.findFirst({
+            where,
+            select: { 
+                id: true, 
+                workingHours: true, 
+                user: { select: { fullName: true } },
+                leaves: {
+                    where: {
+                         // Overlap check: Leave Start <= Range End AND Leave End >= Range Start
+                         startDate: { lte: end },
+                         endDate: { gte: start }
+                    }
                 }
             }
-        };
-
-        if (stylistId) {
-            const where: any = { id: stylistId as string, isActive: true };
-            if (styleId) where.styles = { some: { id: styleId as string } };
-            
-            const stylist = await prisma.stylist.findFirst({ where, select });
-            return stylist ? [stylist] : [];
-        } else {
-            const where: any = { isActive: true };
-            if (styleId) where.styles = { some: { id: styleId as string } };
-            return prisma.stylist.findMany({ where, select });
+        });
+        if (stylist) activeStylists = [stylist];
+    } else {
+        const where: any = { isActive: true };
+        if (styleId) {
+            where.styles = { some: { id: styleId as string } };
         }
-    };
 
-    // 2. Prepare Bookings Query
-    const fetchBookings = async () => {
-        const whereBookings: any = {
-            bookingDate: { gte: start, lte: end },
-            status: { not: 'cancelled' }
-        };
-        if (excludeBookingId) whereBookings.id = { not: excludeBookingId as string };
-        
-        return prisma.booking.findMany({
-            where: whereBookings,
-            select: {
-                id: true,
-                bookingDate: true,
-                bookingTime: true,
-                stylistId: true,
-                styleId: true,
-                categoryId: true
+        activeStylists = await prisma.stylist.findMany({
+            where,
+            select: { 
+                id: true, 
+                workingHours: true, 
+                user: { select: { fullName: true } },
+                leaves: {
+                    where: {
+                         startDate: { lte: end },
+                         endDate: { gte: start }
+                    }
+                }
             }
         });
-    };
-
-    // 3. Prepare Pricing Query
-    const fetchPricing = async () => {
-        return prisma.stylePricing.findMany({
-            select: { styleId: true, categoryId: true, durationMinutes: true }
-        });
-    };
-
-    // 4. Prepare Settings Query
-    const fetchSettings = async () => {
-        return prisma.salonSettings.findFirst();
-    };
-
-    // Execute in Parallel
-    const [activeStylists, bookings, allPricing, settings] = await Promise.all([
-        fetchStylists(),
-        fetchBookings(),
-        fetchPricing(),
-        fetchSettings()
-    ]);
-
-    console.timeEnd('availability-db-fetch');
+    }
 
     if (activeStylists.length === 0) {
-        const emptyData = startDate && endDate ? {} : [];
-        cache.set(cacheKey, { data: emptyData, expires: Date.now() + CACHE_TTL });
-        if (cache.size > 1000) cache.clear();
-        res.json(emptyData); 
+        res.json(startDate && endDate ? {} : []); 
         return;
     }
+
+    // 2. Fetch all bookings in range
+    // We fetch ALL bookings (even for other stylists) if we need to calculate global capacity
+    // But if a specific stylist is requested, we theoretically only care about them + unassigned
+    // To be safe and simple, fetch all active bookings in range
+    const whereBookings: any = {
+        bookingDate: {
+            gte: start,
+            lte: end
+        },
+        status: { not: 'cancelled' }
+    };
+
+    if (excludeBookingId) {
+        whereBookings.id = { not: excludeBookingId as string };
+    }
+
+    const bookings = await prisma.booking.findMany({
+        where: whereBookings,
+        select: {
+            id: true,
+            bookingDate: true,
+            bookingTime: true,
+            stylistId: true,
+            styleId: true,
+            categoryId: true
+        }
+    });
+
+    // 3. Fetch Pricing for Duration Calculation
+    // We need to know the duration of existing bookings to check for overlaps
+    const allPricing = await prisma.stylePricing.findMany({
+        select: {
+            styleId: true,
+            categoryId: true,
+            durationMinutes: true
+        }
+    });
 
     const durationMap = new Map<string, number>();
     allPricing.forEach(p => {
@@ -142,6 +138,8 @@ export const getAvailability = async (req: Request, res: Response): Promise<void
         return durationMap.get(`${b.styleId}_${b.categoryId}`) || 60;
     };
 
+    // 4. Fetch Business Hours
+    const settings = await prisma.salonSettings.findFirst();
     const businessHours = (settings?.businessHours as any) || DEFAULT_BUSINESS_HOURS;
     const daysMap = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 
@@ -307,16 +305,11 @@ export const getAvailability = async (req: Request, res: Response): Promise<void
     }
 
     // Return array if single date (legacy support), object if range
-    let finalData;
     if (startDate && endDate) {
-        finalData = result;
+        res.json(result);
     } else {
-        finalData = result[toDateString(start)] || [];
+        res.json(result[toDateString(start)] || []);
     }
-
-    cache.set(cacheKey, { data: finalData, expires: Date.now() + CACHE_TTL });
-    if (cache.size > 1000) cache.clear();
-    res.json(finalData);
 
   } catch (error) {
     console.error(error);

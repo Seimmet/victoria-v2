@@ -11,6 +11,9 @@
     "db:clean": "tsx prisma/clean-db.ts",
     "build": "npx prisma generate && tsc"
   },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
   "dependencies": {
     "@prisma/client": "^6.2.1",
     "@types/bcryptjs": "^3.0.0",
