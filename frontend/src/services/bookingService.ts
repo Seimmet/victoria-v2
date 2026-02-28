@@ -84,7 +84,7 @@ export interface Booking {
 }
 
 export const bookingService = {
-  async getAvailability(date: string, styleId?: string, categoryId?: string, stylistId?: string, duration?: number, excludeBookingId?: string): Promise<TimeSlot[]> {
+  async getAvailability(date: string, styleId?: string, categoryId?: string, stylistId?: string, duration?: number, excludeBookingId?: string, signal?: AbortSignal): Promise<TimeSlot[]> {
     const params = new URLSearchParams({ date, _t: Date.now().toString() });
     if (styleId) params.append('styleId', styleId);
     if (categoryId) params.append('categoryId', categoryId);
@@ -92,7 +92,7 @@ export const bookingService = {
     if (duration) params.append('duration', duration.toString());
     if (excludeBookingId) params.append('excludeBookingId', excludeBookingId);
     
-    const response = await fetch(`${API_URL}/availability?${params.toString()}`);
+    const response = await fetch(`${API_URL}/availability?${params.toString()}`, { signal });
     if (!response.ok) throw new Error('Failed to fetch availability');
     return response.json();
   },

@@ -292,6 +292,8 @@ export default function Booking() {
 
   // --- Fetch Availability (Step 3) ---
   useEffect(() => {
+    const controller = new AbortController();
+
     if (step === 4 && selectedStyleId && selectedCategoryId && selectedDate) {
       const fetchAvailability = async () => {
         setLoading(true);
@@ -306,22 +308,35 @@ export default function Booking() {
             selectedStyleId,
             selectedCategoryId,
             (selectedStylistId && selectedStylistId !== 'unassigned') ? selectedStylistId : undefined,
-            duration
+            duration,
+            undefined, // excludeBookingId
+            controller.signal
           );
-          setWeeklyAvailability({ [dateStr]: slots });
-        } catch (error) {
-          console.error(error);
-          toast({
-             title: "Error",
-             description: "Failed to load availability",
-             variant: "destructive"
-          });
+          
+          if (!controller.signal.aborted) {
+            setWeeklyAvailability({ [dateStr]: slots });
+          }
+        } catch (error: any) {
+          if (error.name !== 'AbortError') {
+            console.error(error);
+            toast({
+               title: "Error",
+               description: "Failed to load availability",
+               variant: "destructive"
+            });
+          }
         } finally {
-          setLoading(false);
+          if (!controller.signal.aborted) {
+            setLoading(false);
+          }
         }
       };
       fetchAvailability();
     }
+
+    return () => {
+      controller.abort();
+    };
   }, [step, selectedDate, selectedStyleId, selectedCategoryId, selectedStylistId]);
 
   // --- Handlers ---
