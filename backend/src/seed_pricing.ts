@@ -2,17 +2,18 @@
 import { PrismaClient } from '@prisma/client';
 import * as XLSX from 'xlsx';
 import path from 'path';
+import { Pool } from 'pg';
+import { PrismaPg } from '@prisma/adapter-pg';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
-const prisma = new PrismaClient({
-  datasources: {
-    db: {
-      url: process.env.DATABASE_URL,
-    },
-  },
-});
+const connectionString = `${process.env.DATABASE_URL}`;
+
+const pool = new Pool({ connectionString });
+const adapter = new PrismaPg(pool);
+
+const prisma = new PrismaClient({ adapter });
 
 async function main() {
   // Path to the Excel file
