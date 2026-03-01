@@ -1,7 +1,12 @@
 
 import { PrismaClient } from '@prisma/client';
+import dotenv from 'dotenv';
 
-const prisma = new PrismaClient();
+dotenv.config();
+
+const prisma = new PrismaClient({
+  datasourceUrl: process.env.DATABASE_URL,
+});
 
 const TARGET_HOURS = {
   monday: { start: "09:00", end: "22:00", isOpen: true },
