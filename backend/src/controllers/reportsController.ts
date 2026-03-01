@@ -1,6 +1,5 @@
 import { Request, Response } from 'express';
 import prisma from '../utils/prisma';
-import { Decimal } from '@prisma/client/runtime/library';
 
 // Helper to convert Decimal to number
 const toNumber = (value: any): number => {
