@@ -24,8 +24,6 @@ import promoRoutes from './routes/promoRoutes';
 import cron from 'node-cron';
 import { reminderService } from './services/reminderService';
 
-dotenv.config();
-
 const app = express();
 const PORT = process.env.PORT || 5000;
 const ENABLE_REMINDERS = process.env.ENABLE_REMINDERS !== 'false';
