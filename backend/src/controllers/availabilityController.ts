@@ -11,6 +11,15 @@ const DEFAULT_BUSINESS_HOURS = {
   sunday: { start: "09:00", end: "22:00", isOpen: true },
 };
 
+// Helper: Parse "HH:MM" to minutes
+const parseTime = (timeStr: string): number => {
+    const [hours, minutes] = timeStr.split(':').map(Number);
+    return hours * 60 + (minutes || 0);
+};
+
+// Helper: Format Date to YYYY-MM-DD
+const toDateString = (d: Date) => d.toISOString().split('T')[0];
+
 export const getAvailability = async (req: Request, res: Response): Promise<void> => {
   try {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -39,258 +48,252 @@ export const getAvailability = async (req: Request, res: Response): Promise<void
 
     const requestedDuration = duration ? parseInt(duration as string) : 60;
 
-    // 1. Get Active Stylists
-    let activeStylists: { id: string, workingHours: any, user: { fullName: string }, leaves: { startDate: Date, endDate: Date }[] }[] = [];
-    if (stylistId) {
-        const where: any = { id: stylistId as string, isActive: true };
-        if (styleId) {
-            where.styles = { some: { id: styleId as string } };
-        }
-
-        const stylist = await prisma.stylist.findFirst({
-            where,
-            select: { 
-                id: true, 
-                workingHours: true, 
-                user: { select: { fullName: true } },
-                leaves: {
-                    where: {
-                         // Overlap check: Leave Start <= Range End AND Leave End >= Range Start
-                         startDate: { lte: end },
-                         endDate: { gte: start }
-                    }
+    // --- 1. Parallel DB Fetching ---
+    
+    // A. Fetch Stylists
+    const fetchStylists = async () => {
+        const select = { 
+            id: true, 
+            workingHours: true, 
+            user: { select: { fullName: true } },
+            leaves: {
+                where: {
+                     startDate: { lte: end },
+                     endDate: { gte: start }
                 }
             }
-        });
-        if (stylist) activeStylists = [stylist];
-    } else {
+        };
+
         const where: any = { isActive: true };
-        if (styleId) {
-            where.styles = { some: { id: styleId as string } };
-        }
+        if (stylistId) where.id = stylistId as string;
+        if (styleId) where.styles = { some: { id: styleId as string } };
 
-        activeStylists = await prisma.stylist.findMany({
-            where,
-            select: { 
-                id: true, 
-                workingHours: true, 
-                user: { select: { fullName: true } },
-                leaves: {
-                    where: {
-                         startDate: { lte: end },
-                         endDate: { gte: start }
-                    }
-                }
+        if (stylistId) {
+            const stylist = await prisma.stylist.findFirst({ where, select });
+            return stylist ? [stylist] : [];
+        } else {
+            return prisma.stylist.findMany({ where, select });
+        }
+    };
+
+    // B. Fetch Bookings
+    const fetchBookings = async () => {
+        const whereBookings: any = {
+            bookingDate: { gte: start, lte: end },
+            status: { not: 'cancelled' }
+        };
+        if (excludeBookingId) {
+            whereBookings.id = { not: excludeBookingId as string };
+        }
+        return prisma.booking.findMany({
+            where: whereBookings,
+            select: {
+                id: true,
+                bookingDate: true,
+                bookingTime: true,
+                stylistId: true,
+                styleId: true,
+                categoryId: true
             }
         });
-    }
+    };
+
+    // C. Fetch Pricing (for durations)
+    const fetchPricing = async () => {
+        return prisma.stylePricing.findMany({
+            select: { styleId: true, categoryId: true, durationMinutes: true }
+        });
+    };
+
+    // D. Fetch Settings
+    const fetchSettings = async () => {
+        return prisma.salonSettings.findFirst();
+    };
+
+    // Execute all queries in parallel
+    const [activeStylists, bookings, allPricing, settings] = await Promise.all([
+        fetchStylists(),
+        fetchBookings(),
+        fetchPricing(),
+        fetchSettings()
+    ]);
 
     if (activeStylists.length === 0) {
         res.json(startDate && endDate ? {} : []); 
         return;
     }
 
-    // 2. Fetch all bookings in range
-    // We fetch ALL bookings (even for other stylists) if we need to calculate global capacity
-    // But if a specific stylist is requested, we theoretically only care about them + unassigned
-    // To be safe and simple, fetch all active bookings in range
-    const whereBookings: any = {
-        bookingDate: {
-            gte: start,
-            lte: end
-        },
-        status: { not: 'cancelled' }
-    };
+    // --- 2. Pre-processing & Indexing ---
 
-    if (excludeBookingId) {
-        whereBookings.id = { not: excludeBookingId as string };
-    }
-
-    const bookings = await prisma.booking.findMany({
-        where: whereBookings,
-        select: {
-            id: true,
-            bookingDate: true,
-            bookingTime: true,
-            stylistId: true,
-            styleId: true,
-            categoryId: true
-        }
-    });
-
-    // 3. Fetch Pricing for Duration Calculation
-    // We need to know the duration of existing bookings to check for overlaps
-    const allPricing = await prisma.stylePricing.findMany({
-        select: {
-            styleId: true,
-            categoryId: true,
-            durationMinutes: true
-        }
-    });
-
+    // Build Duration Map
     const durationMap = new Map<string, number>();
     allPricing.forEach(p => {
         durationMap.set(`${p.styleId}_${p.categoryId}`, p.durationMinutes);
     });
-
-    const getBookingDuration = (b: { styleId: string | null, categoryId: string | null }) => {
-        if (!b.styleId || !b.categoryId) return 60;
-        return durationMap.get(`${b.styleId}_${b.categoryId}`) || 60;
+    
+    const getBookingDuration = (styleId: string | null, categoryId: string | null) => {
+        if (!styleId || !categoryId) return 60;
+        return durationMap.get(`${styleId}_${categoryId}`) || 60;
     };
 
-    // 4. Fetch Business Hours
-    const settings = await prisma.salonSettings.findFirst();
+    // Group Bookings by Date & Pre-calculate Minutes
+    // Structure: Map<DateString, { unassigned: {start, end}[], byStylist: Map<StylistId, {start, end}[]> }>
+    const bookingsByDate = new Map<string, { unassigned: {start: number, end: number}[], byStylist: Map<string, {start: number, end: number}[]> }>();
+
+    bookings.forEach(b => {
+        const dateKey = toDateString(new Date(b.bookingDate));
+        
+        if (!bookingsByDate.has(dateKey)) {
+            bookingsByDate.set(dateKey, { unassigned: [], byStylist: new Map() });
+        }
+        
+        const dayGroup = bookingsByDate.get(dateKey)!;
+        
+        // Calculate start/end minutes
+        const bTime = new Date(b.bookingTime);
+        const startMinutes = bTime.getUTCHours() * 60 + bTime.getUTCMinutes();
+        const duration = getBookingDuration(b.styleId, b.categoryId);
+        const endMinutes = startMinutes + duration;
+        
+        const processedBooking = { start: startMinutes, end: endMinutes };
+
+        if (b.stylistId) {
+            if (!dayGroup.byStylist.has(b.stylistId)) {
+                dayGroup.byStylist.set(b.stylistId, []);
+            }
+            dayGroup.byStylist.get(b.stylistId)!.push(processedBooking);
+        } else {
+            dayGroup.unassigned.push(processedBooking);
+        }
+    });
+
+    // Prepare Business Hours
     const businessHours = (settings?.businessHours as any) || DEFAULT_BUSINESS_HOURS;
     const daysMap = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-
-    // Helper to format date as YYYY-MM-DD
-    const toDateString = (d: Date) => d.toISOString().split('T')[0];
 
     const result: Record<string, any[]> = {};
     const loopDate = new Date(start);
 
+    // --- 3. Optimized Main Loop ---
     while (loopDate <= end) {
         const dateKey = toDateString(loopDate);
-        const dayOfWeek = loopDate.getUTCDay(); // 0 = Sunday
+        const dayOfWeek = loopDate.getUTCDay();
         const dayName = daysMap[dayOfWeek];
         const dayConfig = businessHours[dayName];
+        
+        // Get pre-grouped bookings for this day
+        const dayBookings = bookingsByDate.get(dateKey) || { unassigned: [], byStylist: new Map() };
 
-        // 1. Determine Effective Operating Range (Union of Global + Stylist Hours)
+        // Determine Effective Operating Range
         let minStartHour = 24;
         let maxEndHour = 0;
         let isDayOpenGlobally = dayConfig && dayConfig.isOpen;
 
+        let globalStartMinutes = 0;
+        let globalEndMinutes = 0;
+
         if (isDayOpenGlobally) {
             minStartHour = parseInt(dayConfig.start.split(':')[0]);
             maxEndHour = parseInt(dayConfig.end.split(':')[0]);
+            globalStartMinutes = parseTime(dayConfig.start);
+            globalEndMinutes = parseTime(dayConfig.end);
         }
 
-        // Check overrides from active stylists
+        // Identify Valid Stylists for THIS Day (and their working hours)
+        const validStylistsForDay: { id: string, name: string, start: number, end: number, bookings: {start: number, end: number}[] }[] = [];
+        
         for (const stylist of activeStylists) {
-            // Check if stylist is on leave
-            const isStrictlyOnLeave = stylist.leaves.some(l => {
-                return loopDate.getTime() >= l.startDate.getTime() && loopDate.getTime() <= l.endDate.getTime();
-            });
+            // Check Leave (Timestamp comparison)
+            const isOnLeave = stylist.leaves.some(l => 
+                loopDate.getTime() >= l.startDate.getTime() && loopDate.getTime() <= l.endDate.getTime()
+            );
+            if (isOnLeave) continue;
 
-            if (isStrictlyOnLeave) continue;
+            let sStart = -1;
+            let sEnd = -1;
 
             if (stylist.workingHours) {
                 const sSchedule = (stylist.workingHours as any)[dayName.toLowerCase()];
                 if (sSchedule && sSchedule.isOpen && sSchedule.start && sSchedule.end) {
-                    const sStart = parseInt(sSchedule.start.split(':')[0]);
-                    const sEnd = parseInt(sSchedule.end.split(':')[0]);
+                    sStart = parseTime(sSchedule.start);
+                    sEnd = parseTime(sSchedule.end);
                     
-                    // If we found a working stylist, update range
-                    if (sStart < minStartHour) minStartHour = sStart;
-                    if (sEnd > maxEndHour) maxEndHour = sEnd;
+                    // Update daily range
+                    const sStartHour = Math.floor(sStart / 60);
+                    const sEndHour = Math.ceil(sEnd / 60); 
+                    
+                    if (sStartHour < minStartHour) minStartHour = sStartHour;
+                    if (sEndHour > maxEndHour) maxEndHour = sEndHour;
+                } else if (sSchedule && !sSchedule.isOpen) {
+                    continue; // Explicitly closed
                 }
+            } 
+            
+            // Fallback to Global Hours
+            if (sStart === -1 && isDayOpenGlobally) {
+                sStart = globalStartMinutes;
+                sEnd = globalEndMinutes;
+            }
+
+            if (sStart !== -1) {
+                validStylistsForDay.push({
+                    id: stylist.id,
+                    name: stylist.user.fullName,
+                    start: sStart,
+                    end: sEnd,
+                    bookings: dayBookings.byStylist.get(stylist.id) || []
+                });
             }
         }
 
-        if (minStartHour >= maxEndHour) {
+        if (minStartHour >= maxEndHour || validStylistsForDay.length === 0) {
             result[dateKey] = [];
         } else {
-            const daySlots: { time: string; available: boolean; spots: number; stylists: { id: string; name: string; }[]; }[] = [];
+            const daySlots: any[] = [];
             
-            // Filter bookings for this day
-            const dayBookings = bookings.filter(b => 
-                toDateString(new Date(b.bookingDate)) === dateKey
-            );
-
+            // Loop through hours
             for (let hour = minStartHour; hour < maxEndHour; hour++) {
-                const timeString = `${hour.toString().padStart(2, '0')}:00:00`;
-                
-                // Construct Requested Slot Range
                 const slotStartMinutes = hour * 60;
                 const slotEndMinutes = slotStartMinutes + requestedDuration;
+                const timeString = `${hour.toString().padStart(2, '0')}:00`;
 
-                // Check Availability
-                let freeStylistsCount = 0;
+                // A. Check Unassigned Bookings Overlap
                 let unassignedConflictCount = 0;
-
-                // 1. Calculate Unassigned Bookings Overlap
-                const unassignedBookings = dayBookings.filter(b => !b.stylistId);
-                for (const b of unassignedBookings) {
-                    const bTime = new Date(b.bookingTime);
-                    const bStartMinutes = bTime.getUTCHours() * 60 + bTime.getUTCMinutes();
-                    const bDuration = getBookingDuration(b);
-                    const bEndMinutes = bStartMinutes + bDuration;
-
-                    if (slotStartMinutes < bEndMinutes && slotEndMinutes > bStartMinutes) {
+                for (const b of dayBookings.unassigned) {
+                    // Overlap logic: (StartA < EndB) and (EndA > StartB)
+                    if (slotStartMinutes < b.end && slotEndMinutes > b.start) {
                         unassignedConflictCount++;
                     }
                 }
 
-                // 2. Check Each Active Stylist
+                // B. Check Each Valid Stylist
                 const freeStylists: { id: string, name: string }[] = [];
-                for (const stylist of activeStylists) {
-                    
-                    // Check if stylist is on leave
-                    const isStrictlyOnLeave = stylist.leaves.some(l => {
-                        return loopDate.getTime() >= l.startDate.getTime() && loopDate.getTime() <= l.endDate.getTime();
-                    });
-
-                    if (isStrictlyOnLeave) continue;
-
-                    // Check specific working hours if defined
-                    if (stylist.workingHours) {
-                        const daySchedule = (stylist.workingHours as any)[dayName.toLowerCase()];
-                        
-                        // If explicitly marked as not working today
-                        if (daySchedule && !daySchedule.isOpen) {
-                            continue;
-                        }
-
-                        // If working hours are defined, check if slot fits
-                        if (daySchedule && daySchedule.isOpen && daySchedule.start && daySchedule.end) {
-                             const sStart = parseInt(daySchedule.start.split(':')[0]) * 60 + parseInt(daySchedule.start.split(':')[1] || '0');
-                             const sEnd = parseInt(daySchedule.end.split(':')[0]) * 60 + parseInt(daySchedule.end.split(':')[1] || '0');
-                             
-                             if (slotStartMinutes < sStart || slotEndMinutes > sEnd) {
-                                 continue;
-                             }
-                        }
-                    } else {
-                        // Fallback to Global Hours logic
-                        if (!isDayOpenGlobally) {
-                            continue; // Salon closed, stylist follows salon
-                        }
-                        
-                        // Check against Global Hours
-                        const gStart = parseInt(dayConfig.start.split(':')[0]) * 60 + parseInt(dayConfig.start.split(':')[1] || '0');
-                        const gEnd = parseInt(dayConfig.end.split(':')[0]) * 60 + parseInt(dayConfig.end.split(':')[1] || '0');
-
-                        if (slotStartMinutes < gStart || slotEndMinutes > gEnd) {
-                            continue;
-                        }
+                
+                for (const stylist of validStylistsForDay) {
+                    // 1. Check Working Hours
+                    if (slotStartMinutes < stylist.start || slotEndMinutes > stylist.end) {
+                        continue;
                     }
 
-                    const stylistBookings = dayBookings.filter(b => b.stylistId === stylist.id);
+                    // 2. Check Stylist Bookings
                     let isStylistFree = true;
-
-                    for (const b of stylistBookings) {
-                        const bTime = new Date(b.bookingTime);
-                        const bStartMinutes =bTime.getUTCHours() * 60 + bTime.getUTCMinutes();
-                        const bDuration = getBookingDuration(b);
-                        const bEndMinutes = bStartMinutes + bDuration;
-
-                        if (slotStartMinutes < bEndMinutes && slotEndMinutes > bStartMinutes) {
+                    for (const b of stylist.bookings) {
+                        if (slotStartMinutes < b.end && slotEndMinutes > b.start) {
                             isStylistFree = false;
                             break;
                         }
                     }
 
                     if (isStylistFree) {
-                        freeStylists.push({ id: stylist.id, name: stylist.user.fullName });
+                        freeStylists.push({ id: stylist.id, name: stylist.name });
                     }
                 }
 
-                // Final Calculation
                 const finalSpots = freeStylists.length - unassignedConflictCount;
 
                 if (finalSpots > 0) {
                     daySlots.push({
-                        time: timeString.substring(0, 5), // "10:00"
+                        time: timeString,
                         available: true,
                         spots: finalSpots,
                         stylists: freeStylists
@@ -300,8 +303,7 @@ export const getAvailability = async (req: Request, res: Response): Promise<void
             result[dateKey] = daySlots;
         }
 
-        // Next day
-         loopDate.setDate(loopDate.getUTCDate() + 1);
+        loopDate.setDate(loopDate.getUTCDate() + 1);
     }
 
     // Return array if single date (legacy support), object if range
